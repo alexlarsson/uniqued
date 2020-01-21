@@ -5,12 +5,17 @@
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <sys/types.h>
+#include <sys/stat.h>
 #include <glib.h>
 #include <gio/gio.h>
 #include <gio/gunixfdlist.h>
 
+static gsize real_blob_size;
+static gsize apparent_blob_size;
+
 typedef struct {
   char *sha256;
+  gsize len;
   int fd;
   int ref_count;
 } Blob;
@@ -42,6 +47,14 @@ close_fd (int *fdp)
 
 #define auto_fd __attribute__((cleanup(close_fd)))
 
+static void
+print_stats (void)
+{
+  g_autofree gchar *real_size = g_format_size (real_blob_size);
+  g_autofree gchar *apparent_size = g_format_size (apparent_blob_size);
+  g_debug ("Total apparent memory size: %s, actual size: %s", apparent_size, real_size);
+}
+
 static Blob *
 blob_ref (Blob *blob)
 {
@@ -57,6 +70,7 @@ blob_unref (Blob *blob)
     {
       g_debug ("Blob for %s destroyed", blob->sha256);
 
+      real_blob_size -= blob->len;
       g_hash_table_remove (blobs, blob->sha256);
 
       close (blob->fd);
@@ -71,11 +85,17 @@ static Blob *
 blob_new (int fd,
           const char *sha256)
 {
+  struct stat statbuf;
+
   Blob *blob = g_new0 (Blob, 1);
 
   blob->sha256 = g_strdup (sha256);
   blob->fd = fd;
   blob->ref_count = 1;
+
+  if (fstat (fd, &statbuf) == 0)
+    blob->len = statbuf.st_size;
+  real_blob_size += blob->len;
 
   g_hash_table_insert (blobs, blob->sha256, blob);
 
@@ -93,6 +113,13 @@ lookup_blob (const char *sha256)
   return NULL;
 }
 
+static void
+removed_blob_from_peer_cb (Blob *blob)
+{
+  apparent_blob_size -= blob->len;
+  blob_unref (blob);
+}
+
 /* return value owned by peers table, only destroyed when peer dies */
 static Peer *
 lookup_peer (const char *name)
@@ -104,7 +131,7 @@ lookup_peer (const char *name)
       peer = g_new0 (Peer, 1);
       peer->name = g_strdup (name);
       peer->next_blob_id = 1;
-      peer->blobs = g_hash_table_new_full (g_direct_hash, g_direct_equal, NULL, (GDestroyNotify)blob_unref);
+      peer->blobs = g_hash_table_new_full (g_direct_hash, g_direct_equal, NULL, (GDestroyNotify)removed_blob_from_peer_cb);
       g_hash_table_insert (peers, peer->name, peer);
     }
 
@@ -125,6 +152,7 @@ add_blob_to_peer (const char *peer_name, Blob *blob)
   Peer *peer = lookup_peer (peer_name);
   guint32 blob_id = peer->next_blob_id++;
 
+  apparent_blob_size += blob->len;
   g_hash_table_insert (peer->blobs, GUINT_TO_POINTER(blob_id), blob_ref (blob));
 
   g_debug ("Added blob %d (with sha256 %s) for peer %s", blob_id, blob->sha256, peer_name);
@@ -304,6 +332,8 @@ make_unique (GDBusConnection       *connection,
 
   blob_id = add_blob_to_peer (sender, blob);
 
+  print_stats ();
+
   g_dbus_method_invocation_return_value_with_unix_fd_list (invocation,
                                                            g_variant_new ("(ahu)", array_builder, blob_id),
                                                            ret_fds);
@@ -329,6 +359,8 @@ forget (GDBusConnection       *connection,
   g_variant_get (parameters, "(u)", &blob_id);
 
   remove_blob_from_peer (sender, blob_id);
+
+  print_stats ();
 
   g_dbus_method_invocation_return_value (invocation, g_variant_new ("()"));
 }
@@ -371,7 +403,10 @@ name_owner_changed (GDBusConnection *connection,
       strcmp (to, "") == 0)
     {
       if (g_hash_table_remove (peers, name))
-        g_debug ("Peer %s died", name);
+        {
+          g_debug ("Peer %s died", name);
+          print_stats ();
+        }
     }
 }
 
