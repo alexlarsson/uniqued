@@ -287,8 +287,8 @@ create_sealed_memfd_for_data (gconstpointer data, gsize len)
   return -1;
 }
 
-static GBytes *
-make_unique_sync (gconstpointer data, gsize len)
+GBytes *
+g_bytes_new_unique_sync (gconstpointer data, gsize len)
 {
   int memfd = -1;
   void *memfd_data = NULL;
@@ -313,8 +313,8 @@ make_unique_sync (gconstpointer data, gsize len)
   return g_bytes_new (data, len);
 }
 
-static GBytes *
-make_unique_async (gconstpointer data, gsize len)
+GBytes *
+g_bytes_new_unique_async (gconstpointer data, gsize len)
 {
   int memfd = -1;
   void *memfd_data = NULL;
@@ -374,13 +374,13 @@ int main()
   char *str = "Hello, World!";
   GBytes *data1, *data2, *data3;
 
-  data1 = make_unique_sync (str, strlen (str) + 1);
+  data1 = g_bytes_new_unique_sync (str, strlen (str) + 1);
   g_print ("data1: %p %s\n", data1, (char *)g_bytes_get_data (data1, NULL));
 
-  data2 = make_unique_sync (str, strlen (str) + 1);
+  data2 = g_bytes_new_unique_sync (str, strlen (str) + 1);
   g_print ("data2: %p %s\n", data2, (char *)g_bytes_get_data (data2, NULL));
 
-  data3 = make_unique_async (str, strlen (str) + 1);
+  data3 = g_bytes_new_unique_async (str, strlen (str) + 1);
   g_print ("data3: %p %s\n", data3, (char *)g_bytes_get_data (data3, NULL));
 
   loop = g_main_loop_new (NULL, FALSE);
