@@ -274,8 +274,11 @@ static int
 create_sealed_memfd_for_data (gconstpointer data, gsize len)
 {
   int memfd = -1;
+  static int count = 0;
+  char *full_name = g_strdup_printf ("unique-%d-%d", getpid (), count++);
 
-  memfd = memfd_create ("test-memfd", MFD_CLOEXEC | MFD_ALLOW_SEALING);
+  memfd = memfd_create (full_name, MFD_CLOEXEC | MFD_ALLOW_SEALING);
+  g_free (full_name);
   if (memfd < 0)
     return -1;
 
@@ -337,5 +340,3 @@ g_bytes_new_unique_async (gconstpointer data, gsize len)
 
   return g_bytes_new (data, len); /* Fall back to regular copy */
 }
-
-
