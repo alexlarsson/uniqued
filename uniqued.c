@@ -236,15 +236,19 @@ checksum_from_fd (GChecksum *checksum,
 {
   guchar buf[64*1024];
   ssize_t res;
+  off_t offset = 0;
 
   do
     {
-      res = read (fd, buf, sizeof (buf));
+      res = pread (fd, buf, sizeof (buf), offset);
       if (res == -1)
         return FALSE;
 
       if (res > 0)
-        g_checksum_update (checksum, buf, res);
+        {
+          g_checksum_update (checksum, buf, res);
+          offset += res;
+        }
     }
   while (res > 0);
 
@@ -314,7 +318,7 @@ make_unique (GDBusConnection       *connection,
   if (blob == NULL)
     {
       blob = blob_new (steal_fd (&fd), sha256);
-      g_debug ("Created new blob for %s", sha256);
+      g_debug ("Created new blob for %s (size %ld)", sha256, blob->len);
     }
   else
     {
