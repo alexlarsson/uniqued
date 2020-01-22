@@ -83,18 +83,16 @@ G_DEFINE_AUTOPTR_CLEANUP_FUNC (Blob, blob_unref)
 
 static Blob *
 blob_new (int fd,
-          const char *checksum)
+          const char *checksum,
+          gsize size)
 {
-  struct stat statbuf;
-
   Blob *blob = g_new0 (Blob, 1);
 
   blob->checksum = g_strdup (checksum);
   blob->fd = fd;
+  blob->len = size;
   blob->ref_count = 1;
 
-  if (fstat (fd, &statbuf) == 0)
-    blob->len = statbuf.st_size;
   real_blob_size += blob->len;
 
   g_hash_table_insert (blobs, blob->checksum, blob);
@@ -230,31 +228,6 @@ steal_one_fd_from_list (GUnixFDList *fd_list,
   return fd;
 }
 
-static gboolean
-checksum_from_fd (GChecksum *checksum,
-                  int fd)
-{
-  guchar buf[64*1024];
-  ssize_t res;
-  off_t offset = 0;
-
-  do
-    {
-      res = pread (fd, buf, sizeof (buf), offset);
-      if (res == -1)
-        return FALSE;
-
-      if (res > 0)
-        {
-          g_checksum_update (checksum, buf, res);
-          offset += res;
-        }
-    }
-  while (res > 0);
-
-  return TRUE;
-}
-
 static void
 make_unique (GDBusConnection       *connection,
              const gchar           *sender,
@@ -272,6 +245,8 @@ make_unique (GDBusConnection       *connection,
   const gchar *checksum;
   g_autoptr(Blob) blob = NULL;
   guint32 blob_id;
+  struct stat statbuf;
+  void *memfd_data;
 
   g_debug ("Got MakeUnique request from %s", sender);
 
@@ -285,10 +260,11 @@ make_unique (GDBusConnection       *connection,
   g_variant_get (parameters, "(h)", &handle);
 
   fd = steal_one_fd_from_list (fd_list, handle);
-  if (fd == -1)
+  if (fd == -1 ||
+      fstat (fd, &statbuf) != 0)
     {
       g_dbus_method_invocation_return_error (invocation, G_DBUS_ERROR,
-                                             G_DBUS_ERROR_INVALID_ARGS, "No fd passed");
+                                             G_DBUS_ERROR_INVALID_ARGS, "Invalid fd passed");
       return;
     }
 
@@ -301,12 +277,16 @@ make_unique (GDBusConnection       *connection,
     }
 
   checksummer = g_checksum_new (G_CHECKSUM_SHA1);
-  if (!checksum_from_fd (checksummer, fd))
+  memfd_data = mmap (NULL, statbuf.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
+  if (memfd_data == MAP_FAILED)
     {
       g_dbus_method_invocation_return_error (invocation, G_DBUS_ERROR,
                                              G_DBUS_ERROR_INVALID_ARGS, "Can't read data");
       return;
     }
+
+  g_checksum_update (checksummer, memfd_data, statbuf.st_size);
+  munmap (memfd_data, statbuf.st_size);
 
   checksum = g_checksum_get_string (checksummer);
 
@@ -317,7 +297,7 @@ make_unique (GDBusConnection       *connection,
   blob = lookup_blob (checksum);
   if (blob == NULL)
     {
-      blob = blob_new (steal_fd (&fd), checksum);
+      blob = blob_new (steal_fd (&fd), checksum, statbuf.st_size);
       g_debug ("Created new blob for %s (size %ld)", checksum, blob->len);
     }
   else
