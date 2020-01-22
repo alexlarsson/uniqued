@@ -14,7 +14,7 @@ static gsize real_blob_size;
 static gsize apparent_blob_size;
 
 typedef struct {
-  char *sha256;
+  char *checksum;
   gsize len;
   int fd;
   int ref_count;
@@ -68,13 +68,13 @@ blob_unref (Blob *blob)
   blob->ref_count--;
   if (blob->ref_count == 0)
     {
-      g_debug ("Blob for %s destroyed", blob->sha256);
+      g_debug ("Blob for %s destroyed", blob->checksum);
 
       real_blob_size -= blob->len;
-      g_hash_table_remove (blobs, blob->sha256);
+      g_hash_table_remove (blobs, blob->checksum);
 
       close (blob->fd);
-      g_free (blob->sha256);
+      g_free (blob->checksum);
       g_free (blob);
     }
 }
@@ -83,13 +83,13 @@ G_DEFINE_AUTOPTR_CLEANUP_FUNC (Blob, blob_unref)
 
 static Blob *
 blob_new (int fd,
-          const char *sha256)
+          const char *checksum)
 {
   struct stat statbuf;
 
   Blob *blob = g_new0 (Blob, 1);
 
-  blob->sha256 = g_strdup (sha256);
+  blob->checksum = g_strdup (checksum);
   blob->fd = fd;
   blob->ref_count = 1;
 
@@ -97,15 +97,15 @@ blob_new (int fd,
     blob->len = statbuf.st_size;
   real_blob_size += blob->len;
 
-  g_hash_table_insert (blobs, blob->sha256, blob);
+  g_hash_table_insert (blobs, blob->checksum, blob);
 
   return blob;
 }
 
 static Blob *
-lookup_blob (const char *sha256)
+lookup_blob (const char *checksum)
 {
-  Blob *blob = g_hash_table_lookup (blobs, sha256);
+  Blob *blob = g_hash_table_lookup (blobs, checksum);
 
   if (blob)
     return blob_ref (blob);
@@ -155,7 +155,7 @@ add_blob_to_peer (const char *peer_name, Blob *blob)
   apparent_blob_size += blob->len;
   g_hash_table_insert (peer->blobs, GUINT_TO_POINTER(blob_id), blob_ref (blob));
 
-  g_debug ("Added blob %d (with sha256 %s) for peer %s", blob_id, blob->sha256, peer_name);
+  g_debug ("Added blob %d (with checksum %s) for peer %s", blob_id, blob->checksum, peer_name);
 
   return blob_id;
 }
@@ -267,9 +267,9 @@ make_unique (GDBusConnection       *connection,
   gint32 handle;
   auto_fd int fd = -1;
   unsigned int seals;
-  g_autoptr(GChecksum) checksum = NULL;
+  g_autoptr(GChecksum) checksummer = NULL;
   g_autoptr(GVariantBuilder) array_builder = NULL;
-  const gchar *sha256;
+  const gchar *checksum;
   g_autoptr(Blob) blob = NULL;
   guint32 blob_id;
 
@@ -300,25 +300,25 @@ make_unique (GDBusConnection       *connection,
       return;
     }
 
-  checksum = g_checksum_new (G_CHECKSUM_SHA256);
-  if (!checksum_from_fd (checksum, fd))
+  checksummer = g_checksum_new (G_CHECKSUM_SHA1);
+  if (!checksum_from_fd (checksummer, fd))
     {
       g_dbus_method_invocation_return_error (invocation, G_DBUS_ERROR,
                                              G_DBUS_ERROR_INVALID_ARGS, "Can't read data");
       return;
     }
 
-  sha256 = g_checksum_get_string (checksum);
+  checksum = g_checksum_get_string (checksummer);
 
   array_builder = g_variant_builder_new (G_VARIANT_TYPE ("ah"));
 
   ret_fds = g_unix_fd_list_new ();
 
-  blob = lookup_blob (sha256);
+  blob = lookup_blob (checksum);
   if (blob == NULL)
     {
-      blob = blob_new (steal_fd (&fd), sha256);
-      g_debug ("Created new blob for %s (size %ld)", sha256, blob->len);
+      blob = blob_new (steal_fd (&fd), checksum);
+      g_debug ("Created new blob for %s (size %ld)", checksum, blob->len);
     }
   else
     {
@@ -330,7 +330,7 @@ make_unique (GDBusConnection       *connection,
           return;
         }
 
-      g_debug ("Reusing old blob for %s", sha256);
+      g_debug ("Reusing old blob for %s", checksum);
       g_variant_builder_add (array_builder, "h", fd_handle);
     }
 
